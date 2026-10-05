@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>美容室ゲーム</title>
+<style>
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; padding: 0; background: #ffe9f0; font-family: -apple-system, "Hiragino Sans", sans-serif; color: #4a3340; overscroll-behavior: none; }
+#app { max-width: 420px; margin: 0 auto; padding: 10px 12px 20px; }
+#top { display: flex; justify-content: space-between; align-items: center; font-weight: bold; font-size: 15px; padding: 4px 4px 8px; }
+#order { background: #fff; border-radius: 16px; padding: 12px 14px; font-size: 15px; line-height: 1.5; box-shadow: 0 2px 6px rgba(200,120,150,.25); min-height: 68px; }
+#order b { color: #e0457b; }
+#stage { position: relative; margin-top: 10px; }
+canvas { display: block; width: 100%; border-radius: 18px; background: #fff; touch-action: none; box-shadow: 0 2px 6px rgba(200,120,150,.25); }
+#btns { display: flex; gap: 10px; margin-top: 12px; }
+button { flex: 1; border: none; border-radius: 14px; padding: 14px 0; font-size: 16px; font-weight: bold; font-family: inherit; color: #fff; background: #e0457b; }
+button.sub { background: #b9a3ad; }
+button:disabled { opacity: .4; }
+#result { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(255,233,240,.82); border-radius: 18px; }
+#result.show { display: flex; }
+#card { background: #fff; border-radius: 18px; padding: 20px 22px; text-align: center; width: 78%; box-shadow: 0 4px 14px rgba(200,120,150,.4); }
+#stars { font-size: 40px; letter-spacing: 4px; }
+#score { font-size: 22px; font-weight: bold; margin: 6px 0; }
+#comment { font-size: 15px; margin-bottom: 14px; }
+#card button { width: 100%; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="top">
+    <span id="count">お客さん 1人目</span>
+    <span id="total">⭐ 0</span>
+  </div>
+  <div id="order"></div>
+  <div id="stage">
+    <canvas id="cv"></canvas>
+    <div id="result">
+      <div id="card">
+        <div id="stars"></div>
+        <div id="score"></div>
+        <div id="comment"></div>
+        <button id="nextBtn">次のお客さん</button>
+      </div>
+    </div>
+  </div>
+  <div id="btns">
+    <button id="retryBtn" class="sub">やり直し(あと1回)</button>
+    <button id="doneBtn">完成!</button>
+  </div>
+</div>
+
+<script>
+const W = 360, H = 460, COL_W = 4;
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const dpr = window.devicePixelRatio || 1;
+cv.width = W * dpr;
+cv.height = H * dpr;
+ctx.scale(dpr, dpr);
+
+const BANGS = [
+  { label: 'おでこが見える短め', y: 132 },
+  { label: '眉の上', y: 150 },
+  { label: '眉の下', y: 170 }
+];
+const SIDES = [
+  { label: 'あごのライン', y: 255 },
+  { label: '肩まで', y: 300 },
+  { label: '胸のあたり', y: 350 }
+];
+const HAIR_COLORS = ['#3b2a20', '#1f1f24', '#7a4a2a', '#c9a04a', '#8a3b3b'];
+const SKIN_COLORS = ['#ffe0c4', '#f6cfa8', '#e8b88f'];
+
+let cols = [], initial = [], pieces = [];
+let hairColor, skinColor, bangs, sides;
+let customer = 0, totalStars = 0, retryLeft = 1, done = false, mood = 0;
+let pointer = null;
+
+function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+function newCustomer() {
+  customer++;
+  hairColor = pick(HAIR_COLORS);
+  skinColor = pick(SKIN_COLORS);
+  bangs = pick(BANGS);
+  sides = pick(SIDES);
+  cols = [];
+  for (let x = 88; x < 272; x += COL_W) {
+    const cx = x + COL_W / 2;
+    const dx = cx - 180;
+    const top = 165 - 100 * Math.sqrt(1 - (dx / 92) * (dx / 92));
+    const front = Math.abs(dx) < 58;
+    const bottom = front ? 205 + Math.random() * 25 : 390 + Math.random() * 30;
+    cols.push({ x: x, cx: cx, top: top, bottom: bottom, front: front });
+  }
+  initial = cols.map(c => c.bottom);
+  pieces = [];
+  retryLeft = 1;
+  done = false;
+  mood = 0;
+  document.getElementById('count').textContent = 'お客さん ' + customer + '人目';
+  document.getElementById('order').innerHTML =
+    '「前髪は<b>' + bangs.label + '</b>、サイドは<b>' + sides.label + '</b>でお願いします」<br>点線に合わせて指でなぞって切ろう✂️';
+  document.getElementById('result').classList.remove('show');
+  updateButtons();
+}
+
+function updateButtons() {
+  const r = document.getElementById('retryBtn');
+  r.textContent = 'やり直し(あと' + retryLeft + '回)';
+  r.disabled = done || retryLeft <= 0;
+  document.getElementById('doneBtn').disabled = done;
+}
+
+function cutSegment(x0, y0, x1, y1) {
+  const minX = Math.min(x0, x1) - COL_W / 2;
+  const maxX = Math.max(x0, x1) + COL_W / 2;
+  for (const c of cols) {
+    if (c.cx < minX || c.cx > maxX) continue;
+    let t = x1 === x0 ? 1 : (c.cx - x0) / (x1 - x0);
+    t = Math.max(0, Math.min(1, t));
+    const y = y0 + t * (y1 - y0);
+    if (y > c.top + 10 && y < c.bottom) {
+      pieces.push({ x: c.x, y: y, h: c.bottom - y, vy: 1 + Math.random() * 2, vx: (Math.random() - 0.5) * 1.5 });
+      c.bottom = y;
+    }
+  }
+}
+
+function getPos(e) {
+  const r = cv.getBoundingClientRect();
+  return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height };
+}
+
+cv.addEventListener('pointerdown', e => {
+  if (done) return;
+  pointer = getPos(e);
+  cv.setPointerCapture(e.pointerId);
+});
+cv.addEventListener('pointermove', e => {
+  if (done || !pointer) return;
+  const p = getPos(e);
+  cutSegment(pointer.x, pointer.y, p.x, p.y);
+  pointer = p;
+});
+function endPointer() { pointer = null; }
+cv.addEventListener('pointerup', endPointer);
+cv.addEventListener('pointercancel', endPointer);
+
+function finish() {
+  if (done) return;
+  let sum = 0;
+  for (const c of cols) {
+    const target = c.front ? bangs.y : sides.y;
+    const diff = c.bottom - target;
+    let err = diff >= 0 ? diff : -diff * 1.5;
+    err = Math.max(0, err - 2);
+    sum += err;
+  }
+  const mean = sum / cols.length;
+  const score = Math.round(Math.max(0, 100 - mean * 3.5));
+  const stars = score >= 80 ? 3 : score >= 55 ? 2 : 1;
+  totalStars += stars;
+  done = true;
+  mood = stars >= 2 ? 1 : -1;
+  document.getElementById('stars').textContent = '⭐'.repeat(stars);
+  document.getElementById('score').textContent = score + '点';
+  document.getElementById('comment').textContent =
+    stars === 3 ? 'カンペキ!ありがとう!' : stars === 2 ? 'いい感じ!また来ます' : 'うーん…ちょっと違うかも';
+  document.getElementById('total').textContent = '⭐ ' + totalStars;
+  document.getElementById('result').classList.add('show');
+  updateButtons();
+}
+
+function retry() {
+  if (done || retryLeft <= 0) return;
+  retryLeft--;
+  cols.forEach((c, i) => { c.bottom = initial[i]; });
+  pieces = [];
+  updateButtons();
+}
+
+document.getElementById('doneBtn').addEventListener('click', finish);
+document.getElementById('retryBtn').addEventListener('click', retry);
+document.getElementById('nextBtn').addEventListener('click', newCustomer);
+
+function drawPerson() {
+  // ケープ
+  ctx.fillStyle = '#cfe6f5';
+  ctx.beginPath();
+  ctx.moveTo(150, 270);
+  ctx.quadraticCurveTo(40, 300, 20, H);
+  ctx.lineTo(340, H);
+  ctx.quadraticCurveTo(320, 300, 210, 270);
+  ctx.closePath();
+  ctx.fill();
+  // 首
+  ctx.fillStyle = skinColor;
+  ctx.fillRect(163, 235, 34, 50);
+  // 顔
+  ctx.beginPath();
+  ctx.ellipse(180, 170, 70, 85, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // 眉
+  ctx.strokeStyle = '#5a4036';
+  ctx.lineWidth = 3;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(140, 162); ctx.lineTo(164, 160);
+  ctx.moveTo(196, 160); ctx.lineTo(220, 162);
+  ctx.stroke();
+  // 目
+  ctx.fillStyle = '#3a2a2a';
+  ctx.beginPath();
+  ctx.arc(152, 180, 6, 0, Math.PI * 2);
+  ctx.arc(208, 180, 6, 0, Math.PI * 2);
+  ctx.fill();
+  // ほっぺ
+  ctx.fillStyle = 'rgba(255,140,160,.35)';
+  ctx.beginPath();
+  ctx.arc(135, 205, 11, 0, Math.PI * 2);
+  ctx.arc(225, 205, 11, 0, Math.PI * 2);
+  ctx.fill();
+  // 口
+  ctx.strokeStyle = '#c0506a';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  if (mood > 0) ctx.arc(180, 212, 16, 0.15 * Math.PI, 0.85 * Math.PI);
+  else if (mood < 0) ctx.arc(180, 232, 14, 1.2 * Math.PI, 1.8 * Math.PI);
+  else ctx.arc(180, 214, 10, 0.2 * Math.PI, 0.8 * Math.PI);
+  ctx.stroke();
+}
+
+function drawHair() {
+  cols.forEach((c, i) => {
+    ctx.fillStyle = hairColor;
+    ctx.fillRect(c.x, c.top, COL_W + 0.5, c.bottom - c.top);
+    if (i % 2 === 0) {
+      ctx.fillStyle = 'rgba(255,255,255,.08)';
+      ctx.fillRect(c.x, c.top, COL_W, c.bottom - c.top);
+    }
+  });
+}
+
+function dashed(x0, x1, y) {
+  ctx.setLineDash([7, 5]);
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = 'rgba(0,0,0,.45)';
+  ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = '#fff';
+  ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function drawTargets() {
+  dashed(124, 236, bangs.y);
+  dashed(80, 124, sides.y);
+  dashed(236, 280, sides.y);
+}
+
+function drawPieces() {
+  ctx.fillStyle = hairColor;
+  for (const p of pieces) {
+    p.vy += 0.35;
+    p.y += p.vy;
+    p.x += p.vx;
+    ctx.fillRect(p.x, p.y, COL_W, p.h);
+  }
+  pieces = pieces.filter(p => p.y < H + 10);
+}
+
+function loop() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#fff6f9';
+  ctx.fillRect(0, 0, W, H);
+  drawPerson();
+  drawHair();
+  if (!done) drawTargets();
+  drawPieces();
+  if (pointer && !done) {
+    ctx.font = '28px sans-serif';
+    ctx.fillText('✂️', pointer.x - 14, pointer.y - 18);
+  }
+  requestAnimationFrame(loop);
+}
+
+newCustomer();
+loop();
+</script>
+</body>
+</html>
