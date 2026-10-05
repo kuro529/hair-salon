@@ -9,19 +9,25 @@
 html, body { margin: 0; padding: 0; background: #ffe9f0; font-family: -apple-system, "Hiragino Sans", sans-serif; color: #4a3340; overscroll-behavior: none; }
 #app { max-width: 420px; margin: 0 auto; padding: 10px 12px 20px; }
 #top { display: flex; justify-content: space-between; align-items: center; font-weight: bold; font-size: 15px; padding: 4px 4px 8px; }
-#order { background: #fff; border-radius: 16px; padding: 12px 14px; font-size: 15px; line-height: 1.5; box-shadow: 0 2px 6px rgba(200,120,150,.25); min-height: 68px; }
+#order { background: #fff; border-radius: 16px; padding: 10px 14px; font-size: 14px; line-height: 1.55; box-shadow: 0 2px 6px rgba(200,120,150,.25); }
 #order b { color: #e0457b; }
-#stage { position: relative; margin-top: 10px; }
+#order .dim { opacity: .35; }
+#hint { font-size: 13px; font-weight: bold; text-align: center; margin-top: 8px; }
+#stage { position: relative; margin-top: 8px; }
 canvas { display: block; width: 100%; border-radius: 18px; background: #fff; touch-action: none; box-shadow: 0 2px 6px rgba(200,120,150,.25); }
-#btns { display: flex; gap: 10px; margin-top: 12px; }
+.btns { display: flex; gap: 10px; margin-top: 12px; }
+.hide { display: none; }
 button { flex: 1; border: none; border-radius: 14px; padding: 14px 0; font-size: 16px; font-weight: bold; font-family: inherit; color: #fff; background: #e0457b; }
 button.sub { background: #b9a3ad; }
+button.tool { background: #fff; color: #4a3340; border: 3px solid #e6cdd6; padding: 11px 0; }
+button.tool.on { border-color: #e0457b; background: #ffe1ea; }
 button:disabled { opacity: .4; }
 #result { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(255,233,240,.82); border-radius: 18px; }
 #result.show { display: flex; }
 #card { background: #fff; border-radius: 18px; padding: 20px 22px; text-align: center; width: 78%; box-shadow: 0 4px 14px rgba(200,120,150,.4); }
 #stars { font-size: 40px; letter-spacing: 4px; }
-#score { font-size: 22px; font-weight: bold; margin: 6px 0; }
+#score { font-size: 22px; font-weight: bold; margin: 6px 0 2px; }
+#detail { font-size: 13px; margin-bottom: 6px; }
 #comment { font-size: 15px; margin-bottom: 14px; }
 #card button { width: 100%; }
 </style>
@@ -33,25 +39,32 @@ button:disabled { opacity: .4; }
     <span id="total">⭐ 0</span>
   </div>
   <div id="order"></div>
+  <div id="hint"></div>
   <div id="stage">
     <canvas id="cv"></canvas>
     <div id="result">
       <div id="card">
         <div id="stars"></div>
         <div id="score"></div>
+        <div id="detail"></div>
         <div id="comment"></div>
         <button id="nextBtn">次のお客さん</button>
       </div>
     </div>
   </div>
-  <div id="btns">
+  <div id="btnsCut" class="btns">
     <button id="retryBtn" class="sub">やり直し(あと1回)</button>
+    <button id="cutDoneBtn">カット完了 ▶</button>
+  </div>
+  <div id="btnsSet" class="btns hide">
+    <button id="curlBtn" class="tool on">🌀 コテ</button>
+    <button id="ironBtn" class="tool">➖ アイロン</button>
     <button id="doneBtn">完成!</button>
   </div>
 </div>
 
 <script>
-const W = 360, H = 460, COL_W = 4;
+const W = 360, H = 460, COL_W = 4, BIN = 10, BINS = 47;
 const cv = document.getElementById('cv');
 const ctx = cv.getContext('2d');
 const dpr = window.devicePixelRatio || 1;
@@ -59,8 +72,7 @@ cv.width = W * dpr;
 cv.height = H * dpr;
 ctx.scale(dpr, dpr);
 
-const BANGS = [
-  { label: 'おでこが見える短め', y: 132 },
+const LEVELS = [
   { label: '眉の上', y: 150 },
   { label: '眉の下', y: 170 }
 ];
@@ -69,48 +81,100 @@ const SIDES = [
   { label: '肩まで', y: 300 },
   { label: '胸のあたり', y: 350 }
 ];
+const SETS = [
+  { label: 'ストレート(くせを全部のばす)', fn: function () { return 0; } },
+  { label: '毛先だけ巻く(下のほうだけ)', fn: function (c, y) { return y > c.bottom - 60 ? 1 : 0; } },
+  { label: '全体を巻く(目の高さから下ぜんぶ)', fn: function (c, y) { return y > 180 ? 1 : 0; } }
+];
 const HAIR_COLORS = ['#3b2a20', '#1f1f24', '#7a4a2a', '#c9a04a', '#8a3b3b'];
 const SKIN_COLORS = ['#ffe0c4', '#f6cfa8', '#e8b88f'];
 
 let cols = [], initial = [], pieces = [];
-let hairColor, skinColor, bangs, sides;
-let customer = 0, totalStars = 0, retryLeft = 1, done = false, mood = 0;
+let hairColor, skinColor, bangs, sides, setOrder;
+let customer = 0, totalStars = 0, retryLeft = 1, mood = 0;
+let phase = 'cut', tool = 'curl', cutScore = 0;
 let pointer = null;
 
 function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+function makeBangs() {
+  const type = Math.floor(Math.random() * 4);
+  const lv = pick(LEVELS);
+  if (type === 0) {
+    return { text: lv.label + 'でぱっつん(まっすぐ)', fn: function () { return lv.y; } };
+  }
+  if (type === 1) {
+    const dir = Math.random() < 0.5 ? 1 : -1;
+    const from = dir > 0 ? '左' : '右', to = dir > 0 ? '右' : '左';
+    return {
+      text: 'ななめ。画面の' + from + '端は' + lv.label + '、' + to + 'にいくほど長く',
+      fn: function (dx) { return lv.y + (dir * dx + 58) / 116 * 24; }
+    };
+  }
+  if (type === 2) {
+    return {
+      text: 'ラウンド。真ん中は' + lv.label + '、端にいくほど丸く長く',
+      fn: function (dx) { return lv.y + (dx / 58) * (dx / 58) * 24; }
+    };
+  }
+  return {
+    text: 'センター分け。真ん中はおでこを出して、端は目の横まで',
+    fn: function (dx) { return 122 + Math.abs(dx) / 58 * 63; }
+  };
+}
 
 function newCustomer() {
   customer++;
   hairColor = pick(HAIR_COLORS);
   skinColor = pick(SKIN_COLORS);
-  bangs = pick(BANGS);
+  bangs = makeBangs();
   sides = pick(SIDES);
+  setOrder = pick(SETS);
+  const seed = Math.random() * 10;
   cols = [];
+  let i = 0;
   for (let x = 88; x < 272; x += COL_W) {
     const cx = x + COL_W / 2;
     const dx = cx - 180;
     const top = 165 - 100 * Math.sqrt(1 - (dx / 92) * (dx / 92));
     const front = Math.abs(dx) < 58;
     const bottom = front ? 205 + Math.random() * 25 : 390 + Math.random() * 30;
-    cols.push({ x: x, cx: cx, top: top, bottom: bottom, front: front });
+    const curl = [];
+    for (let b = 0; b < BINS; b++) {
+      curl.push(front ? 0 : 0.4 + 0.3 * Math.sin(b * 1.3 + i * 0.5 + seed));
+    }
+    cols.push({ x: x, cx: cx, dx: dx, top: top, bottom: bottom, front: front, curl: curl });
+    i++;
   }
-  initial = cols.map(c => c.bottom);
+  initial = cols.map(function (c) { return c.bottom; });
   pieces = [];
   retryLeft = 1;
-  done = false;
   mood = 0;
+  phase = 'cut';
+  tool = 'curl';
   document.getElementById('count').textContent = 'お客さん ' + customer + '人目';
-  document.getElementById('order').innerHTML =
-    '「前髪は<b>' + bangs.label + '</b>、サイドは<b>' + sides.label + '</b>でお願いします」<br>点線に合わせて指でなぞって切ろう✂️';
   document.getElementById('result').classList.remove('show');
-  updateButtons();
+  updateUI();
 }
 
-function updateButtons() {
+function updateUI() {
+  const cutDim = phase === 'cut' ? '' : ' class="dim"';
+  const setDim = phase === 'cut' ? ' class="dim"' : '';
+  document.getElementById('order').innerHTML =
+    '<div' + cutDim + '>✂️ 前髪:<b>' + bangs.text + '</b></div>' +
+    '<div' + cutDim + '>✂️ サイド:<b>' + sides.label + '</b></div>' +
+    '<div' + setDim + '>🌀 セット:<b>' + setOrder.label + '</b></div>';
+  document.getElementById('hint').textContent =
+    phase === 'cut' ? '指でなぞって髪を切ろう' :
+    phase === 'set' ? '道具を選んでサイドの髪をなぞろう' : '';
+  document.getElementById('btnsCut').classList.toggle('hide', phase !== 'cut');
+  document.getElementById('btnsSet').classList.toggle('hide', phase === 'cut');
   const r = document.getElementById('retryBtn');
   r.textContent = 'やり直し(あと' + retryLeft + '回)';
-  r.disabled = done || retryLeft <= 0;
-  document.getElementById('doneBtn').disabled = done;
+  r.disabled = retryLeft <= 0;
+  document.getElementById('curlBtn').classList.toggle('on', tool === 'curl');
+  document.getElementById('ironBtn').classList.toggle('on', tool === 'iron');
+  document.getElementById('doneBtn').disabled = phase !== 'set';
 }
 
 function cutSegment(x0, y0, x1, y1) {
@@ -128,62 +192,117 @@ function cutSegment(x0, y0, x1, y1) {
   }
 }
 
+function applyTool(x, y) {
+  const v = tool === 'curl' ? 1 : 0;
+  const b0 = Math.floor((y - 8) / BIN), b1 = Math.floor((y + 8) / BIN);
+  for (const c of cols) {
+    if (c.front || Math.abs(c.cx - x) > 10) continue;
+    for (let b = b0; b <= b1; b++) {
+      if (b >= 0 && b < BINS) c.curl[b] = v;
+    }
+  }
+}
+
+function toolSegment(x0, y0, x1, y1) {
+  const dist = Math.hypot(x1 - x0, y1 - y0);
+  const steps = Math.max(1, Math.ceil(dist / 6));
+  for (let s = 0; s <= steps; s++) {
+    const t = s / steps;
+    applyTool(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t);
+  }
+}
+
 function getPos(e) {
   const r = cv.getBoundingClientRect();
   return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height };
 }
 
-cv.addEventListener('pointerdown', e => {
-  if (done) return;
+cv.addEventListener('pointerdown', function (e) {
+  if (phase === 'result') return;
   pointer = getPos(e);
   cv.setPointerCapture(e.pointerId);
+  if (phase === 'set') applyTool(pointer.x, pointer.y);
 });
-cv.addEventListener('pointermove', e => {
-  if (done || !pointer) return;
+cv.addEventListener('pointermove', function (e) {
+  if (phase === 'result' || !pointer) return;
   const p = getPos(e);
-  cutSegment(pointer.x, pointer.y, p.x, p.y);
+  if (phase === 'cut') cutSegment(pointer.x, pointer.y, p.x, p.y);
+  else toolSegment(pointer.x, pointer.y, p.x, p.y);
   pointer = p;
 });
 function endPointer() { pointer = null; }
 cv.addEventListener('pointerup', endPointer);
 cv.addEventListener('pointercancel', endPointer);
 
-function finish() {
-  if (done) return;
+function calcCutScore() {
   let sum = 0;
   for (const c of cols) {
-    const target = c.front ? bangs.y : sides.y;
+    const target = c.front ? bangs.fn(c.dx) : sides.y;
     const diff = c.bottom - target;
     let err = diff >= 0 ? diff : -diff * 1.5;
-    err = Math.max(0, err - 2);
+    err = Math.max(0, err - 5);
     sum += err;
   }
-  const mean = sum / cols.length;
-  const score = Math.round(Math.max(0, 100 - mean * 3.5));
+  return Math.round(Math.max(0, 100 - (sum / cols.length) * 3));
+}
+
+function calcSetScore() {
+  let sum = 0, n = 0;
+  for (const c of cols) {
+    if (c.front) continue;
+    for (let b = 0; b < BINS; b++) {
+      const y = b * BIN + BIN / 2;
+      if (y < c.top || y > c.bottom) continue;
+      let err = Math.abs(c.curl[b] - setOrder.fn(c, y));
+      if (err < 0.15) err = 0;
+      sum += err;
+      n++;
+    }
+  }
+  if (n === 0) return 0;
+  return Math.round(Math.max(0, 100 - (sum / n) * 200));
+}
+
+function cutDone() {
+  if (phase !== 'cut') return;
+  cutScore = calcCutScore();
+  phase = 'set';
+  pointer = null;
+  updateUI();
+}
+
+function finish() {
+  if (phase !== 'set') return;
+  const setScore = calcSetScore();
+  const score = Math.round((cutScore + setScore) / 2);
   const stars = score >= 80 ? 3 : score >= 55 ? 2 : 1;
   totalStars += stars;
-  done = true;
+  phase = 'result';
   mood = stars >= 2 ? 1 : -1;
   document.getElementById('stars').textContent = '⭐'.repeat(stars);
   document.getElementById('score').textContent = score + '点';
+  document.getElementById('detail').textContent = 'カット ' + cutScore + '点 / セット ' + setScore + '点';
   document.getElementById('comment').textContent =
     stars === 3 ? 'カンペキ!ありがとう!' : stars === 2 ? 'いい感じ!また来ます' : 'うーん…ちょっと違うかも';
   document.getElementById('total').textContent = '⭐ ' + totalStars;
   document.getElementById('result').classList.add('show');
-  updateButtons();
+  updateUI();
 }
 
 function retry() {
-  if (done || retryLeft <= 0) return;
+  if (phase !== 'cut' || retryLeft <= 0) return;
   retryLeft--;
-  cols.forEach((c, i) => { c.bottom = initial[i]; });
+  cols.forEach(function (c, i) { c.bottom = initial[i]; });
   pieces = [];
-  updateButtons();
+  updateUI();
 }
 
+document.getElementById('cutDoneBtn').addEventListener('click', cutDone);
 document.getElementById('doneBtn').addEventListener('click', finish);
 document.getElementById('retryBtn').addEventListener('click', retry);
 document.getElementById('nextBtn').addEventListener('click', newCustomer);
+document.getElementById('curlBtn').addEventListener('click', function () { tool = 'curl'; updateUI(); });
+document.getElementById('ironBtn').addEventListener('click', function () { tool = 'iron'; updateUI(); });
 
 function drawPerson() {
   // ケープ
@@ -232,32 +351,50 @@ function drawPerson() {
   ctx.stroke();
 }
 
+function curlAt(c, y) {
+  const f = y / BIN - 0.5;
+  let i = Math.floor(f);
+  const t = f - i;
+  const a = c.curl[Math.max(0, Math.min(BINS - 1, i))];
+  const b = c.curl[Math.max(0, Math.min(BINS - 1, i + 1))];
+  return a + (b - a) * t;
+}
+
+function sidePath(c) {
+  const dir = c.dx < 0 ? -1 : 1;
+  ctx.beginPath();
+  let y = c.top;
+  while (true) {
+    const yy = Math.min(y, c.bottom);
+    const x = c.cx + curlAt(c, yy) * 6 * Math.sin(yy * 0.12) * dir;
+    if (y === c.top) ctx.moveTo(x, yy); else ctx.lineTo(x, yy);
+    if (yy >= c.bottom) break;
+    y += 4;
+  }
+}
+
 function drawHair() {
-  cols.forEach((c, i) => {
-    ctx.fillStyle = hairColor;
-    ctx.fillRect(c.x, c.top, COL_W + 0.5, c.bottom - c.top);
-    if (i % 2 === 0) {
-      ctx.fillStyle = 'rgba(255,255,255,.08)';
-      ctx.fillRect(c.x, c.top, COL_W, c.bottom - c.top);
+  ctx.lineCap = 'butt';
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = COL_W + 0.8;
+  cols.forEach(function (c, i) {
+    if (c.front) {
+      ctx.fillStyle = hairColor;
+      ctx.fillRect(c.x, c.top, COL_W + 0.5, c.bottom - c.top);
+      if (i % 2 === 0) {
+        ctx.fillStyle = 'rgba(255,255,255,.08)';
+        ctx.fillRect(c.x, c.top, COL_W, c.bottom - c.top);
+      }
+    } else {
+      sidePath(c);
+      ctx.strokeStyle = hairColor;
+      ctx.stroke();
+      if (i % 2 === 0) {
+        ctx.strokeStyle = 'rgba(255,255,255,.08)';
+        ctx.stroke();
+      }
     }
   });
-}
-
-function dashed(x0, x1, y) {
-  ctx.setLineDash([7, 5]);
-  ctx.lineWidth = 4;
-  ctx.strokeStyle = 'rgba(0,0,0,.45)';
-  ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = '#fff';
-  ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
-  ctx.setLineDash([]);
-}
-
-function drawTargets() {
-  dashed(124, 236, bangs.y);
-  dashed(80, 124, sides.y);
-  dashed(236, 280, sides.y);
 }
 
 function drawPieces() {
@@ -268,7 +405,7 @@ function drawPieces() {
     p.x += p.vx;
     ctx.fillRect(p.x, p.y, COL_W, p.h);
   }
-  pieces = pieces.filter(p => p.y < H + 10);
+  pieces = pieces.filter(function (p) { return p.y < H + 10; });
 }
 
 function loop() {
@@ -277,11 +414,11 @@ function loop() {
   ctx.fillRect(0, 0, W, H);
   drawPerson();
   drawHair();
-  if (!done) drawTargets();
   drawPieces();
-  if (pointer && !done) {
+  if (pointer && phase !== 'result') {
     ctx.font = '28px sans-serif';
-    ctx.fillText('✂️', pointer.x - 14, pointer.y - 18);
+    const icon = phase === 'cut' ? '✂️' : tool === 'curl' ? '🌀' : '➖';
+    ctx.fillText(icon, pointer.x - 14, pointer.y - 18);
   }
   requestAnimationFrame(loop);
 }
